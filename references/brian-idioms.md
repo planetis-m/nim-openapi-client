@@ -31,7 +31,9 @@ Brian's generic object reader leaves an absent field at its default. When an env
 required, give only the envelope a custom reader: start with `var foundError = false`, set it when
 the `"error"` field occurs, decode that value with the ordinary `readJson`, then finish with
 `if not foundError: p.raiseParseError("missing error field")`. Forward `UnknownFieldPolicy`
-normally; do not custom-decode the inner object unless it has its own special shape.
+normally; do not custom-decode the inner object unless it has its own special shape. A Boolean is
+clearest for one required key; when several keys are required, track their presence with a
+`set[enum]` instead of parallel Booleans.
 
 ## Tolerant Response Enums
 
