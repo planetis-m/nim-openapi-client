@@ -25,6 +25,8 @@ ergonomics but must not be required.
   update dependency metadata through the project's existing dependency workflow when authorized.
 - Keep stable modeled wire data typed. Reserve `RawJson` for intentionally open JSON such as JSON
   Schema, arbitrary metadata, extension payloads, or an unneeded opaque union branch.
+- Keep ordinary containing objects on Brian's generic path. If a result contains a `oneOf`, attach
+  the custom `readJson` only to the nested union type; do not custom-read the entire result.
 - Skip unknown response fields for forward compatibility. Keep known-field type checking strict.
 - Use the project's existing HTTP transport directly. A small shared request helper is useful;
   another transport abstraction is not.
@@ -88,6 +90,9 @@ behavior in constructors and accessors while leaving ordinary wire fields direct
 
 ## Detailed Guidance
 
+- Read [references/brian-idioms.md](references/brian-idioms.md) before implementing `RawJson`, a
+  `oneOf`/`anyOf`, a tolerant response enum, or a custom Brian reader/writer. Use those direct
+  patterns instead of adding probe models, reparsing layers, JSON DOMs, or compatibility wrappers.
 - Read [references/schema-mapping.md](references/schema-mapping.md) when selecting and translating
   OpenAPI schemas into Brian-backed Nim types.
 - Read [references/client-structure.md](references/client-structure.md) when designing modules,

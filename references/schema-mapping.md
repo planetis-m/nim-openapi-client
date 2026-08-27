@@ -68,6 +68,11 @@ Model only branches that the selected operation and application can encounter. I
 an evolving output union, an opaque fallback may retain `RawJson` for unknown branches. Do not expose
 unimplemented request branches as raw escape hatches merely to make the client look complete.
 
+Put the custom reader on the union member itself. The object containing it remains an ordinary
+Brian-decoded object. For example, a result with `output: seq[Output]` needs a custom reader for
+`Output`, not for the result. Follow the concrete pattern in
+[brian-idioms.md](brian-idioms.md#discriminator-unions-one-pass-at-the-union-boundary).
+
 When JSON uses a positional array for a semantic object, attach the custom reader to the element
 type and let Brian decode the surrounding sequence:
 
@@ -130,3 +135,8 @@ errors, pagination, and fields used for control flow should stay typed.
 
 Use `$raw` when the application needs the stored JSON text and `toJson(raw)` when serializing it as a
 JSON value. Do not define an application-local alias or conversion layer.
+
+`RawJson("")` is an omission sentinel only when a custom writer checks it before serialization. A
+non-empty manually constructed `RawJson` must contain one complete valid JSON value. Use
+`CanonRawJson` only when normalized re-emission is an actual requirement; both Brian raw types
+already provide `$`.
