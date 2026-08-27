@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nim Minimal OpenAPI Client"
+  short_description: "Build minimal Brian-backed REST API clients"
+  default_prompt: "Use $nim-openapi-client to implement the application-used subset of this OpenAPI API in Nim with Brian."
