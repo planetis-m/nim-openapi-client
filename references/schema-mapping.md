@@ -72,10 +72,14 @@ fields Brian already handles.
 
 ## Directional Implementation
 
-- Request-only type: construction and `writeJson` only as needed.
-- Response-only type: generic decoding or a focused `readJson`.
-- Bidirectional type: both paths only when the application sends and receives it.
+Protocol direction determines which JSON operation a type needs, not whether it needs a custom
+overload:
 
-Request writers emit required fields, omit selected sentinels/defaults, encode fixed literals, and
-serialize only the active union arm. Convert a typed value to embedded raw JSON exactly once with
-`RawJson(toJson(value))`.
+- Request-only type: serialization only. Use Brian's generic writer unless omission, fixed literals,
+  or a union shape requires custom `writeJson`.
+- Response-only type: decoding only. Use Brian's generic reader unless a union, tolerant enum, or
+  unusual envelope requires custom `readJson`.
+- Bidirectional type: both operations, each generic unless its wire shape needs customization.
+
+Do not declare custom JSON code for an unused direction. A custom response reader accepts and
+forwards `UnknownFieldPolicy`; it must not exist merely to skip unknown fields Brian already handles.

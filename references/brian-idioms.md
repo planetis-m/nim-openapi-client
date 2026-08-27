@@ -136,6 +136,34 @@ proc writeJson(w: var JsonWriter; value: Content) =
   of parts: writeJson(w, value.items)
 ```
 
+## Request Writers
+
+Use a custom writer when generic object serialization would emit request defaults or inactive
+fields that the protocol expects omitted:
+
+```nim
+import brian
+
+type Params = object
+  model: string
+  instructions: string
+  store: bool = true
+
+proc writeJson(w: var JsonWriter; x: Params) =
+  w.write "{\"model\":"
+  writeJson(w, x.model)
+  if x.instructions.len > 0:
+    w.write ",\"instructions\":"
+    writeJson(w, x.instructions)
+  if not x.store:
+    w.write ",\"store\":false"
+  w.write "}"
+```
+
+Always emit required fields. Emit optional fields only when they differ from the chosen omission
+sentinel or documented server default. Use Brian's generic writer when it already produces the
+required request shape.
+
 ## Raw JSON
 
 Use Brian's `RawJson` for a complete open value the application retains or passes through:
