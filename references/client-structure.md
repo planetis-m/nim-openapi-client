@@ -1,106 +1,136 @@
-# Minimal Client Structure and Ergonomics
+# Client Structure and Ergonomics
 
-Use this reference when shaping the local package and HTTP-facing operations.
+Keep the client thin: public wire objects, focused constructors and accessors, and the project's
+existing transport.
 
-## Module Ownership
+## Modules
 
-- `config.nim`: base URL and the authentication/configuration values actually used.
-- `http.nim`: authentication headers, query construction, and a small helper that produces the
-  project's native request specification.
-- `error.nim`: the service's common error envelope and accessors.
-- `<capability>.nim`: one cohesive endpoint family, including its public schema, constructors,
-  request builders, parsers, and semantic accessors.
-- `schema/`: optional; use only when schema volume or cross-capability reuse makes separation useful.
+Use capability modules plus only shared modules that are actually needed:
 
-Do not hide an existing transport behind a second client/transport interface. Status classification,
-retry policy, connection pooling, and scheduling stay with the transport or application unless the
-OpenAPI protocol itself defines them.
+- `config.nim`: base URL and used authentication/configuration.
+- `http.nim`: shared headers and request construction over the existing transport.
+- `error.nim`: common remote error envelope.
+- `<capability>.nim`: schema types, constructors, request builders, parsers, and accessors.
+- `schema/`: optional; split it out only when schema size or reuse warrants it.
 
-If the project has no transport, add the smallest direct HTTP integration needed by the selected
-operations rather than designing a reusable transport framework. Do not make live requests merely to
-validate generated bindings unless the user authorized them.
+Public request and result objects are the wire types directly. Do not introduce private `Wire`
+objects, aliases, converters, or a second representation.
 
-## Public API
+## Constructors
 
-Use public schema objects directly. Avoid private `Wire` objects, type aliases, converters, and a
-second model copied into an ergonomic representation.
+Constructors should remove protocol boilerplate or prevent an invalid shape. The `deps/openai`
+patterns generalize well:
 
-For a new client, choose one consistent operation vocabulary, for example:
+- Typed variants and focused constructors for stable message, content, and tool shapes.
+- `sink T` for inputs stored in the result.
+- Fixed single-valued protocol fields set internally rather than exposed as caller choices.
+- A generic JSON-producing helper serializes once and delegates to its canonical constructor.
 
-- `<operation>Create` or a focused constructor for request parameters.
-- `<operation>Request` for the native HTTP request specification.
-- `<operation>Parse` for parse-into-caller-storage returning `bool`.
+Do not add a constructor that merely repeats exported field assignment.
 
-Keep constructors focused on preventing invalid or noisy wire assembly. Do not add a helper that
-merely repeats an exported field assignment.
+### Open JSON Schema with Typed Local Helpers
 
-Schema fields describe the wire. Accessors describe application semantics:
+Keep arbitrary JSON Schema as `RawJson`. For a schema shape the application constructs repeatedly,
+define only that shape and provide a generic overload that delegates to the raw overload:
 
-- Use direct field access for ordinary required wire data.
-- Return `lent T` for borrowed strings, sequences, objects, and `RawJson`.
-- For optional required-by-caller data, expose `hasX` and a strict `x`/`xOf` accessor that raises a
-  precise `ValueError` rather than manufacturing a default.
-- Scan heterogeneous output collections semantically; do not assume the first item has one subtype.
-- Route repeated accessor failures through one private `{.noinline, noreturn.}` helper.
+```nim
+import brian
 
-## HTTP Fidelity
+type
+  SchemaProperty = object
+    `type`: string
 
-Derive every request detail from the OpenAPI operation:
+  SearchSchema = object
+    `type`: string
+    properties: tuple[query: SchemaProperty]
+    required: seq[string]
+    additionalProperties: bool
 
-- Resolve the server/base URL and path exactly.
-- Expand server variables as specified. Encode path and query values with the transport's URL
-  facilities; do not concatenate unescaped application values.
-- Include only parameters for their documented location.
-- Implement OpenAPI parameter `style`, `explode`, `allowReserved`, and repeated-array behavior for
-  every used path, query, header, and cookie parameter; ordinary key/value encoding is not equivalent
-  to every OpenAPI serialization style.
-- Apply security schemes exactly, including the OR between security requirement objects and the AND
-  between schemes named in one object. Avoid logging credentials.
-- Set the declared request media type. A shared JSON header helper must allow multipart, form, binary,
-  or streaming operations to override `Content-Type`.
-- Send the documented `Accept` value when a used operation has multiple response media types, and
-  dispatch parsing by status and media type rather than assuming every success body is JSON.
-- Preserve raw/binary response bodies for download endpoints.
-- Reject or safely encode CR/LF, quotes, and other header-significant characters in multipart field
-  names and filenames. Use deterministic boundaries in tests; production boundaries must be legal,
-  unpredictable enough for the context, and checked against body collision when needed.
-- Encode fixed protocol literals inside writers when callers have no choice to make.
+  Format = object
+    name: string
+    schema: RawJson
 
-Pagination belongs to the capability when the protocol defines cursors and page shapes. Polling and
-batch orchestration can stay in the application while the client provides typed create/list/retrieve
-requests and results.
+proc formatSchema(name: sink string; schema: sink RawJson): Format =
+  Format(name: name, schema: schema)
 
-## Parse and Error Boundaries
+proc formatSchema[T](name: sink string; schema: T): Format =
+  formatSchema(name, RawJson(toJson(schema)))
 
-A public parse helper may catch Brian's `JsonParsingError`, reset the destination, and return `false`
-when success/failure is the entire contract. Do not catch unrelated operational errors or defects.
-Assign `result = true` after successful decoding and `result = false` in the handled failure branch;
-do not rely on implicit result initialization.
+proc searchFormat(): Format =
+  result = formatSchema("search", SearchSchema(
+    `type`: "object",
+    properties: (query: SchemaProperty(`type`: "string")),
+    required: @["query"],
+    additionalProperties: false
+  ))
+```
 
-Keep the common remote error envelope typed, tolerant of additive fields, and separate from local
-HTTP/network failures. If an endpoint returns a response-or-error sum inside another format such as
-JSONL, expose predicates and strict accessors for both arms.
+Here `properties` has fixed names, so a named tuple is sufficient;
+`additionalProperties: false` is an ordinary Boolean in the JSON Schema document. Do not model the
+whole JSON Schema language. Keep any required empty-object fallback as one explicit constant.
 
-## Replacement Discipline
+## Accessors and Parse Helpers
 
-When replacing an SDK or broad dependency:
+Direct wire fields remain directly readable. Add accessors for semantic selection, validated
+indexing, optional required-by-caller data, or hidden variant storage.
 
-1. Preserve imports, type names, constructor calls, field access, and accessor behavior where the
-   local subset can do so honestly.
-2. If Brian is an editable dependency within scope, put generally applicable missing JSON operations
-   there, not in application shims. Examples are direct file decoding or `$` on Brian-owned raw JSON
-   representations. If it is outside scope, report the missing capability instead of silently
-   expanding authority.
-3. Avoid changing application code for style while changing its dependency. Review every non-import
-   diff as a possible leaked compatibility workaround.
-4. Remove old dependency declarations, compiler paths, defines, and lock entries. Pin the Brian
-   revision that actually contains required APIs.
+```nim
+import std/options
+import brian
 
-During a replacement, compatibility outranks opportunistic type tightening. Keep an established
-string-taking call shape when changing it would create unrelated caller churn; validate or encode
-the closed literal inside the local boundary. For a new API, prefer the stronger enum or constructor
-from the start.
+type
+  Usage = object
+    total_tokens: int
 
-An existing SDK can be consulted for ergonomic ideas or regression fixtures, but the client must be
-implementable from the OpenAPI definition alone. Do not inherit undocumented SDK behavior without an
-application contract or protocol basis.
+  Result = object
+    usage: Option[Usage]
+
+proc raiseResultError(message: string) {.noinline, noreturn.} =
+  raise newException(ValueError, message)
+
+proc hasUsage(x: Result): bool =
+  x.usage.isSome
+
+proc usageOf(x: Result): lent Usage =
+  if x.usage.isNone:
+    raiseResultError("result has no usage data")
+  x.usage.get
+
+proc resultParse(body: string; dst: out Result): bool =
+  try:
+    dst = fromJson(body, Result)
+    result = true
+  except JsonParsingError:
+    dst = default(Result)
+    result = false
+```
+
+- Pair optional data with `hasX` and a strict `xOf` accessor; do not fabricate empty values.
+- Return `lent T` for borrowed strings, sequences, objects, and `RawJson`; return scalars by value.
+- Scan heterogeneous collections in response order for semantic helpers; do not assume item zero has
+  a particular subtype.
+- Validate a variant discriminator before returning its typed payload.
+- Every `bool` parse helper sets `result` explicitly in success and handled-failure branches and
+  resets `dst` on `JsonParsingError`.
+
+## HTTP Integration
+
+Use the project's transport without wrapping it in another client abstraction. For each selected
+operation, implement only the protocol features it uses:
+
+- exact server, path, method, parameter location and OpenAPI serialization style;
+- security requirements and secret-safe headers;
+- declared request and response media types, including status-dependent parsing;
+- binary, multipart, JSONL, pagination, or download behavior when present.
+
+Retries, pooling, scheduling, and generic HTTP status policy stay with the transport or application
+unless the API protocol defines them. Keep tests offline unless live requests are explicitly
+authorized.
+
+## Dependency Replacement
+
+- Preserve existing public names and behavior; application files should ideally change only imports.
+- Put a missing general JSON operation in Brian when Brian is editable, not in a compatibility shim.
+- Remove the old dependency, compiler paths, defines, and lock entries; pin the Brian revision that
+  contains required changes.
+- Review every non-import application diff and avoid unrelated cleanup or type tightening.
