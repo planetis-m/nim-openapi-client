@@ -27,9 +27,10 @@ Add a variant only when callers use branch-specific fields from multiple shapes.
 
 ## Required Wrapper Fields
 
-Brian's generic object reader leaves an absent field at its default. When an envelope key is
-required, give only the envelope a custom reader: start with `var foundError = false`, set it when
-the `"error"` field occurs, decode that value with the ordinary `readJson`, then finish with
+Brian's generic object reader leaves an absent field at its default. When callers must distinguish
+an absent required envelope key from that default, give only the envelope a custom reader: start
+with `var foundError = false`, set it when the `"error"` field occurs, decode that value with the
+ordinary `readJson`, then finish with
 `if not foundError: p.raiseParseError("missing error field")`. Forward `UnknownFieldPolicy`
 normally; do not custom-decode the inner object unless it has its own special shape. A Boolean is
 clearest for one required key; when several keys are required, track their presence with a
@@ -49,11 +50,9 @@ type ResponseStatus {.pure.} = enum
 
 proc readJson(dst: var ResponseStatus; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
-  var value: string
-  readJson(value, p, unknownFields)
-  case value
-  of "completed": dst = completed
-  of "failed": dst = failed
+  case p.jsonStringMatches(["completed", "failed"])
+  of 0: dst = completed
+  of 1: dst = failed
   else: dst = unknown
 ```
 
@@ -85,15 +84,12 @@ type
 proc readJson(dst: var Event; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
   var wireType, id, reason: string
-  for name in p.jsonFields:
-    case name
-    of "type": readJson(wireType, p, unknownFields)
-    of "id": readJson(id, p, unknownFields)
-    of "reason": readJson(reason, p, unknownFields)
-    else:
-      if unknownFields == ufReject:
-        p.raiseParseError("unexpected event field: " & name)
-      p.skipJson()
+  for field in p.jsonFields(["type", "id", "reason"], unknownFields):
+    case field
+    of 0: readJson(wireType, p, unknownFields)
+    of 1: readJson(id, p, unknownFields)
+    of 2: readJson(reason, p, unknownFields)
+    else: discard
 
   case wireType
   of "opened": dst = Event(kind: opened, id: id)
@@ -151,10 +147,11 @@ fields that the protocol expects omitted:
 ```nim
 import brian
 
-type Params = object
-  model: string
-  instructions: string
-  store: bool = true
+type
+  Params = object
+    model: string
+    instructions: string
+    store: bool = true
 
 proc writeJson(w: var JsonWriter; x: Params) =
   w.write "{\"model\":"
@@ -178,9 +175,10 @@ Use Brian's `RawJson` for a complete open value the application retains or passe
 ```nim
 import brian
 
-type Tool = object
-  name: string
-  schema: RawJson
+type
+  Tool = object
+    name: string
+    schema: RawJson
 ```
 
 - `$value` returns stored text for `RawJson` and `CanonRawJson`.
@@ -195,7 +193,8 @@ or `$` for Brian's raw types. Convert typed data once with `RawJson(toJson(value
 ## Custom Code Checklist
 
 - Every reader accepts `UnknownFieldPolicy` and forwards it to nested reads.
-- Use `p.jsonFields` for objects, `p.kind` for token shape, and `p.skipJson()` for ignored values.
+- Use `p.jsonFields(choices, policy)` for objects; it skips or rejects unknown fields itself.
+  Use `p.kind` for token shape and `p.skipJson()` only for a selected value a reader ignores.
 - Use `w.write` for fixed syntax, `w.escapeJson` for dynamic strings or keys, and `writeJson` for
   values.
 - A request union writer emits only the active arm.

@@ -88,13 +88,13 @@ type
 proc raiseResultError(message: string) {.noinline, noreturn.} =
   raise newException(ValueError, message)
 
-proc hasUsage(x: Result): bool =
+proc hasUsage(x: Result): bool {.inline.} =
   x.usage.isSome
 
 proc usageOf(x: Result): lent Usage =
   if x.usage.isNone:
     raiseResultError("result has no usage data")
-  x.usage.get
+  result = x.usage.get
 
 proc resultParse(body: string; dst: out Result): bool =
   try:
