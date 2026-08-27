@@ -25,6 +25,14 @@ type
 
 Add a variant only when callers use branch-specific fields from multiple shapes.
 
+## Required Wrapper Fields
+
+Brian's generic object reader leaves an absent field at its default. When an envelope key is
+required, give only the envelope a custom reader: start with `var foundError = false`, set it when
+the `"error"` field occurs, decode that value with the ordinary `readJson`, then finish with
+`if not foundError: p.raiseParseError("missing error field")`. Forward `UnknownFieldPolicy`
+normally; do not custom-decode the inner object unless it has its own special shape.
+
 ## Tolerant Response Enums
 
 For an evolving server-owned response enum, map unfamiliar strings with a focused reader:
@@ -89,9 +97,6 @@ proc readJson(dst: var Event; p: var JsonParser;
   of "opened": dst = Event(kind: opened, id: id)
   of "closed": dst = Event(kind: closed, reason: reason)
   else: p.raiseParseError("unexpected event type: " & wireType)
-
-type Envelope = object
-  events: seq[Event]
 ```
 
 This is a closed union with no raw or empty fallback. If unfamiliar branches must decode but their
