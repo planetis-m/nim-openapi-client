@@ -50,7 +50,7 @@ type ResponseStatus {.pure.} = enum
 
 proc readJson(dst: var ResponseStatus; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
-  case p.jsonStringMatches(["completed", "failed"])
+  case p.matchString(["completed", "failed"])
   of 0: dst = completed
   of 1: dst = failed
   else: dst = unknown
