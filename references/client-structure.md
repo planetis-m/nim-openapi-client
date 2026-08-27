@@ -74,6 +74,8 @@ requests and results.
 
 A public parse helper may catch Brian's `JsonParsingError`, reset the destination, and return `false`
 when success/failure is the entire contract. Do not catch unrelated operational errors or defects.
+Assign `result = true` after successful decoding and `result = false` in the handled failure branch;
+do not rely on implicit result initialization.
 
 Keep the common remote error envelope typed, tolerant of additive fields, and separate from local
 HTTP/network failures. If an endpoint returns a response-or-error sum inside another format such as

@@ -39,10 +39,15 @@ not mistake incidental encoding order for an OpenAPI requirement.
 - Array -> `seq[T]`, or `array[N, T]` only when the protocol guarantees a fixed length.
 - String literal set -> enum. Use explicit enum string values when Nim spelling differs.
 - Open-ended string namespace -> `string`, not an enum that will reject future values.
-- `additionalProperties` map whose values are used -> `Table[string, T]`.
-- Arbitrary/open object whose internals are not used -> `RawJson`.
+- Arbitrary/open object that the application must retain or pass through -> `RawJson`; omit it from
+  the local projection when it is unused.
 - JSON `null` or absent response field whose absence matters -> `Option[T]`.
 - Integer/number -> the narrowest sound Nim numeric type; preserve timestamp and size ranges.
+
+`additionalProperties` is a schema constraint, not a field that automatically needs representation,
+and it does not by itself require a custom Brian reader or writer. Use `Table[string, T]` only when
+the application consumes dynamic keys whose declared value schema is `T`. Otherwise omit unused
+dynamic entries, or keep the whole value as `RawJson` when the application must pass it through.
 
 Honor `readOnly`/`writeOnly` direction. In OpenAPI 3.0, inspect `nullable`; in OpenAPI 3.1, inspect
 whether the JSON Schema type includes `null`. A property being absent from `required` does not by
@@ -64,25 +69,15 @@ objects that make ordinary field access cumbersome.
 Use a discriminated object when callers need multiple shapes. Decode the discriminator when the
 specification provides one; otherwise distinguish branches by token kind or required shape.
 
-Model only branches that the selected operation and application can encounter. If the server owns
-an evolving output union, an opaque fallback may retain `RawJson` for unknown branches. Do not expose
+Model only branches that the application consumes. Do not add an empty unknown variant arm or a raw
+fallback merely because the OpenAPI schema says `oneOf`. Preserve an unfamiliar branch as `RawJson`
+only when the application actually stores or passes that payload through. Do not expose
 unimplemented request branches as raw escape hatches merely to make the client look complete.
 
-Put the custom reader on the union member itself. The object containing it remains an ordinary
-Brian-decoded object. For example, a result with `output: seq[Output]` needs a custom reader for
-`Output`, not for the result. Follow the concrete pattern in
-[brian-idioms.md](brian-idioms.md#discriminator-unions-one-pass-at-the-union-boundary).
-
-When JSON uses a positional array for a semantic object, attach the custom reader to the element
-type and let Brian decode the surrounding sequence:
-
-```nim
-proc readJson(dst: var RangeValue; p: var JsonParser;
-    unknownFields: UnknownFieldPolicy) =
-  var pair: (int, string)
-  readJson(pair, p, unknownFields)
-  dst = RangeValue(index: pair[0], value: pair[1])
-```
+When a union is represented as a variant, put the custom reader on the union member itself. The
+object containing it remains an ordinary Brian-decoded object. For example, a result with
+`output: seq[Output]` needs a custom reader for `Output`, not for the result. Follow the concrete
+pattern in [brian-idioms.md](brian-idioms.md#use-a-variant-only-for-multiple-used-shapes).
 
 ### Nullability
 
@@ -96,9 +91,15 @@ Distinguish three cases deliberately:
 
 ## Enums and Compatibility
 
-Request enums should be strict so callers cannot construct undocumented literals. For evolving
-server-owned response enums, add `unknown = ""` and a focused reader that maps unfamiliar strings to
-`unknown`. Do not weaken every enum to `string` because one output namespace evolves.
+Request enums should be strict so callers cannot construct undocumented literals. For an evolving
+server-owned response enum, `unknown = ""` is appropriate only when the application can safely lose
+the unfamiliar wire spelling. Give every such member a doc comment stating that it is a read-side
+fallback, that the original spelling is discarded, and what callers may safely do with it. Add a
+focused reader that maps unfamiliar strings to `unknown`. Use `string` instead when the application
+must retain the spelling. Do not weaken every enum because one output namespace evolves.
+
+Keep `unknown` distinct from a request-side `unspecified = ""` omission sentinel. Writers must omit
+`unspecified`; they must never emit the empty string as a protocol value.
 
 Brian's generic object reader initializes missing fields to Nim defaults; it does not prove that
 OpenAPI-required properties were present. Validate required fields at the public parse boundary when
@@ -111,8 +112,8 @@ validation, not normal production parsing. Every custom reader accepts
 `UnknownFieldPolicy` and forwards it through nested `readJson` calls.
 
 Do not write manual object dispatch merely to ignore fields. Brian handles ordinary objects. A
-custom reader is justified for a real union, tolerant enum, positional representation, unusual
-envelope, or another shape generic decoding cannot represent.
+custom reader is justified for a real union, tolerant enum, unusual envelope, or another shape
+generic decoding cannot represent.
 
 ## Directional Types
 
@@ -133,6 +134,10 @@ Use Brian's `RawJson` directly. Good boundaries include arbitrary metadata, JSON
 extension dictionaries, and deliberately opaque response branches. Stable messages, content parts,
 errors, pagination, and fields used for control flow should stay typed.
 
+This decision is independent of schema composition: `oneOf` and `anyOf` do not inherently require a
+raw fallback, and an ordinary non-union property may legitimately be `RawJson` when it is open by
+contract and used opaquely by the application.
+
 Use `$raw` when the application needs the stored JSON text and `toJson(raw)` when serializing it as a
 JSON value. Do not define an application-local alias or conversion layer.
 
@@ -140,3 +145,7 @@ JSON value. Do not define an application-local alias or conversion layer.
 non-empty manually constructed `RawJson` must contain one complete valid JSON value. Use
 `CanonRawJson` only when normalized re-emission is an actual requirement; both Brian raw types
 already provide `$`.
+
+When constructing a JSON Schema document, `additionalProperties: false` is simply a Boolean keyword
+inside that document. The `deps/openai` structured-output pattern uses named tuples for fixed
+`properties` and a Boolean for this keyword; no table or special serializer is involved.

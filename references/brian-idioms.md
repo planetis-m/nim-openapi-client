@@ -1,214 +1,144 @@
 # Brian Idioms for Minimal API Models
 
-Use these patterns directly. They are the reusable parts of the `deps/openai` design, expressed with
-Brian's public API. Do not add a JSON compatibility module, a local `RawJson` type, a wire-model
-layer, a discriminator probe followed by a second parse, or a JSON DOM.
+Use Brian directly. Do not add a JSON compatibility module, a local `RawJson` type, a private wire
+model, a JSON DOM, or a parse-probe/reparse layer.
 
-## Ordinary Objects Stay Ordinary
+## Project Before Customizing
 
-Brian generically decodes ordinary objects and skips unknown fields by default. If a result contains
-a heterogeneous output union, only that nested union needs a custom reader:
-
-```nim
-type
-  Result* = object
-    id*: string
-    status*: Status
-    output*: seq[Output]
-    usage*: Option[Usage]
-
-let value = fromJson(body, Result)
-```
-
-Do not write `readJson(Result, ...)` merely because `Output` is a `oneOf`. Brian finds the
-`readJson(Output, ...)` overload while decoding `seq[Output]`. Likewise, let Brian generically decode
-ordinary nested objects, sequences, tuples, options, and tables.
-
-## `RawJson` Is Brian's Open Boundary
-
-Use Brian's type directly for JSON Schema documents, arbitrary metadata, and deliberately unmodelled
-extension payloads:
+An OpenAPI `oneOf` does not force the local model to be a variant. If the application only reads
+fields common to the useful branch and checks the wire discriminator, an ordinary projection is
+smaller and Brian decodes it generically:
 
 ```nim
-import brian
-
-type Tool = object
-  name: string
-  schema: RawJson
-
-const EmptyObjectSchema =
-  RawJson("""{"type":"object","properties":{}}""")
-```
-
-The standard operations already have the desired ergonomics:
-
-- `$value` returns the stored JSON text for both `RawJson` and `CanonRawJson`.
-- `writeJson(w, value)` and `toJson(value)` emit the raw value as JSON, not as a quoted JSON string.
-- `fromJson(input, RawJson)` validates and captures one complete value without materializing a DOM.
-- `CanonRawJson` is only for deliberately normalized, whitespace-free re-emission. It is not a more
-  typed form of `RawJson`.
-
-Manually constructing `RawJson` trusts the supplied bytes. Use it only with one complete valid JSON
-value. `RawJson("")` is useful as an omission sentinel, but it is not itself valid JSON and must not
-reach `writeJson`:
-
-```nim
-proc writeJson(w: var JsonWriter; value: Params) =
-  w.write "{"
-  if ($value.metadata).len > 0:
-    w.write "\"metadata\":"
-    writeJson(w, value.metadata)
-  w.write "}"
-```
-
-For an ergonomic helper that accepts either already-raw JSON or a typed Nim value, keep the
-`RawJson` overload canonical and serialize the typed value exactly once:
-
-```nim
-proc formatSchema(name: sink string; schema: sink RawJson): Format =
-  Format(name: name, schema: schema)
-
-proc formatSchema[T](name: sink string; schema: T): Format =
-  formatSchema(name, RawJson(toJson(schema)))
-```
-
-Never use `RawJson(toJson(toJson(value)))`: the second `toJson` turns JSON text into a JSON string.
-Do not define `$`, `string` converters, aliases, or wrapper objects around Brian's raw types.
-
-## Discriminator Unions: One Pass at the Union Boundary
-
-For a server-owned evolving `oneOf`, use the same shape as the Responses output model:
-
-1. Keep the wire discriminator as a typed field.
-2. Use a separate private variant discriminator for Nim storage.
-3. Give each application-used branch a typed payload.
-4. Keep one opaque arm for unknown server-owned branches when callers need forward compatibility.
-5. Parse the object once with `p.jsonFields`; do not parse a probe and then parse the same JSON again.
-
-This reduced example models message and function-call branches:
-
-```nim
-import std/tables
+import std/options
 import brian
 
 type
-  OutputKind* {.pure.} = enum
-    unknown = ""
-    message
-    function_call
+  ResponseStatus* {.pure.} = enum
+    unknown = "" ## Unrecognized server value; spelling is discarded; do not assume completion.
+    completed
+    failed
 
-  OutputPart* = object
-    `type`*: string
-    text*: string
+  OutputPart = object
+    `type`: string
+    text: string
 
-  OutputMessage* = object
-    role*: string
-    content*: seq[OutputPart]
+  Output = object
+    `type`: string
+    content: seq[OutputPart]
 
-  OutputFunctionCall* = object
-    call_id*: string
-    name*: string
-    arguments*: string
+  Usage = object
+    total_tokens: int
 
-  OutputShape = enum
-    outputMessage
-    outputFunctionCall
-    outputOpaque
+  Result = object
+    id: string
+    status: ResponseStatus
+    output: seq[Output]
+    usage: Option[Usage]
 
-  Output* = object
-    id*: string
-    status*: string
-    `type`*: OutputKind
-    case shape: OutputShape
-    of outputMessage:
-      message*: OutputMessage
-    of outputFunctionCall:
-      functionCall*: OutputFunctionCall
-    of outputOpaque:
-      extraFields*: RawJson
-
-proc readJson(dst: var OutputKind; p: var JsonParser;
+proc readJson(dst: var ResponseStatus; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
   var value: string
   readJson(value, p, unknownFields)
   case value
-  of "message": dst = OutputKind.message
-  of "function_call": dst = OutputKind.function_call
-  else: dst = OutputKind.unknown
+  of "completed": dst = ResponseStatus.completed
+  of "failed": dst = ResponseStatus.failed
+  else: dst = ResponseStatus.unknown
 
-proc readJson(dst: var Output; p: var JsonParser;
-    unknownFields: UnknownFieldPolicy) =
-  var id, status, role, callId, name, arguments: string
-  var kind = OutputKind.unknown
-  var content: seq[OutputPart]
-  var extra = initOrderedTable[string, RawJson]()
-
-  for fieldName in p.jsonFields:
-    case fieldName
-    of "id": readJson(id, p, unknownFields)
-    of "status": readJson(status, p, unknownFields)
-    of "type": readJson(kind, p, unknownFields)
-    of "role": readJson(role, p, unknownFields)
-    of "content": readJson(content, p, unknownFields)
-    of "call_id": readJson(callId, p, unknownFields)
-    of "name": readJson(name, p, unknownFields)
-    of "arguments": readJson(arguments, p, unknownFields)
-    else:
-      var value: RawJson
-      readJson(value, p, unknownFields)
-      extra[fieldName] = move(value)
-
-  case kind
-  of OutputKind.message:
-    if unknownFields == ufReject and extra.len > 0:
-      p.raiseParseError("unexpected field for message output")
-    dst = Output(
-      id: id,
-      status: status,
-      `type`: kind,
-      shape: outputMessage,
-      message: OutputMessage(role: role, content: move(content))
-    )
-  of OutputKind.function_call:
-    if unknownFields == ufReject and extra.len > 0:
-      p.raiseParseError("unexpected field for function-call output")
-    dst = Output(
-      id: id,
-      status: status,
-      `type`: kind,
-      shape: outputFunctionCall,
-      functionCall: OutputFunctionCall(
-        call_id: callId,
-        name: name,
-        arguments: arguments
-      )
-    )
-  of OutputKind.unknown:
-    dst = Output(
-      id: id,
-      status: status,
-      `type`: kind,
-      shape: outputOpaque,
-      extraFields:
-        if extra.len == 0: RawJson("")
-        else: RawJson(toJson(extra))
-    )
 ```
 
-This preserves the important compatibility behavior of the full pattern: a known typed branch
-rejects truly extra fields under `ufReject`, while an unknown branch treats its unmodelled fields as
-its opaque payload. Under normal `ufSkip`, known branches remain forward-compatible.
+The containing `Result`, `Output`, sequences, options, and ordinary nested objects need no custom
+reader. This is the preferred minimal response model when branch-specific payloads are not used.
 
-Only add the opaque arm if the selected API and application need to retain unknown branch data. If
-they only need to ignore unknown branch fields, use a smaller representation that lets Brian skip
-them. Do not turn stable used branches into `RawJson`.
+## Document Every `unknown` Enum Member
+
+Use `unknown = ""` only for a server-owned response enum where unfamiliar future values must not
+break decoding. Its doc comment must state:
+
+- that it represents an unrecognized wire value;
+- whether the original spelling is discarded;
+- what application behavior is safe when it occurs.
+
+The focused reader above maps only documented literals and sends everything else to `unknown`.
+Known literals still get type-checked. If the application must log, store, compare, or round-trip the
+unrecognized spelling, use `string` instead; an `unknown` enum loses that information.
+
+Do not put `unknown` on request enums. Requests should reject undocumented values. Do not confuse it
+with `unspecified = ""`, which is a request-side omission sentinel that a custom writer must omit.
+
+## Use a Variant Only for Multiple Used Shapes
+
+When callers consume branch-specific fields from two or more shapes, use a discriminated object and
+put the custom reader on that object—not on its containing result:
+
+```nim
+import brian
+
+type
+  EventKind = enum
+    opened
+    closed
+
+  Event = object
+    case kind: EventKind
+    of opened:
+      id: string
+    of closed:
+      reason: string
+
+proc readJson(dst: var Event; p: var JsonParser;
+    unknownFields: UnknownFieldPolicy) =
+  var wireType, id, reason: string
+  for name in p.jsonFields:
+    case name
+    of "type": readJson(wireType, p, unknownFields)
+    of "id": readJson(id, p, unknownFields)
+    of "reason": readJson(reason, p, unknownFields)
+    else:
+      if unknownFields == ufReject:
+        p.raiseParseError("unexpected event field: " & name)
+      p.skipJson()
+
+  case wireType
+  of "opened": dst = Event(kind: opened, id: id)
+  of "closed": dst = Event(kind: closed, reason: reason)
+  else: p.raiseParseError("unexpected event type: " & wireType)
+
+type Envelope = object
+  events: seq[Event]
+
+```
+
+This example is deliberately closed and contains no raw fallback. If unfamiliar server branches
+must remain decodable but their fields are unused, first reconsider the ordinary projection pattern
+above. Only when the application must preserve an unfamiliar branch's payload should the variant
+gain an opaque arm containing Brian's `RawJson`. That is an explicit pass-through feature, not a
+property of `oneOf`.
+
+Do not collect discarded fields, add an empty unknown arm, or parse twice merely to avoid deciding
+whether unknown payload preservation is required. If preservation is required and the pinned Brian
+version lacks a direct primitive needed to implement it cleanly, add that generally useful primitive
+to Brian when Brian is in scope.
 
 ## Token-Kind Unions
 
-When `oneOf` arms differ by JSON token kind rather than an object discriminator, use Brian's direct
-README pattern:
+When arms differ by JSON token kind, use Brian's direct parser-kind pattern:
 
 ```nim
+import brian
+
+type
+  ContentKind = enum
+    text
+    parts
+
+  Content = object
+    case kind: ContentKind
+    of text:
+      body: string
+    of parts:
+      items: seq[string]
+
 proc readJson(dst: var Content; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
   case p.kind
@@ -220,19 +150,49 @@ proc readJson(dst: var Content; p: var JsonParser;
     readJson(dst.items, p, unknownFields)
   else:
     p.raiseParseError("expected string or array")
+
+proc writeJson(w: var JsonWriter; value: Content) =
+  case value.kind
+  of text: writeJson(w, value.body)
+  of parts: writeJson(w, value.items)
+
 ```
 
-The matching writer switches on the same variant discriminator and delegates each active payload to
-Brian's `writeJson`. Do not serialize inactive fields.
+## `RawJson` Is an Independent Open Boundary
+
+Use Brian's `RawJson` only when the application needs to retain or pass through a complete JSON
+value whose internal schema is intentionally not modeled, such as a JSON Schema document or
+arbitrary metadata:
+
+```nim
+import brian
+
+type Tool = object
+  name: string
+  schema: RawJson
+
+let tool = fromJson(
+  """{"name":"search","schema": { "type": "object" }}""",
+  Tool)
+```
+
+Brian already supplies the required ergonomics:
+
+- `$value` returns stored text for `RawJson` and `CanonRawJson`.
+- `writeJson` and `toJson` emit a raw value as JSON rather than quoting it.
+- `fromJson(input, RawJson)` validates and captures one complete value.
+- `CanonRawJson` is for deliberately normalized re-emission, not stronger typing.
+
+Manually constructing `RawJson` trusts the bytes. `RawJson("")` may be used as an omission sentinel
+only when a custom writer checks it before serialization. Never add aliases, converters, wrappers,
+or a client-local `$` for Brian's raw types.
 
 ## Custom Reader and Writer Rules
 
-- Every custom reader accepts `unknownFields: UnknownFieldPolicy` and forwards it to nested reads.
-- Use `p.jsonFields` for objects, `p.kind` for token-shape unions, and `p.skipJson()` only for values
-  intentionally ignored.
-- Use `w.write` for fixed JSON punctuation/literals, `w.escapeJson` for dynamic keys or strings, and
-  `writeJson` for values.
-- Custom-read only shapes Brian cannot map generically: genuine unions, tolerant evolving enums,
-  positional wire shapes, or unusual envelopes.
-- Request unions get custom writers that emit only the active arm. Ordinary response/result objects
-  remain generic even when a nested member has a custom reader.
+- Every custom reader accepts `UnknownFieldPolicy` and forwards it to nested reads.
+- Use `p.jsonFields` for objects, `p.kind` for token-shape unions, and `p.skipJson()` for deliberately
+  ignored values.
+- Use `w.write` for fixed syntax, `w.escapeJson` for dynamic strings or keys, and `writeJson` for
+  values.
+- Custom-read only genuine unions, tolerant response enums, positional shapes, or unusual envelopes.
+- A request union writer emits only its active arm. An ordinary containing result stays generic.
