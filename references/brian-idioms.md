@@ -51,10 +51,7 @@ type
 
 proc readJson(dst: var ResponseStatus; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
-  case p.matchString(["completed", "failed"])
-  of 0: dst = completed
-  of 1: dst = failed
-  else: dst = unknown
+  readJson(dst, p, unknownFields, unknown)
 ```
 
 Every `unknown` member must document that it is a read-side fallback, whether the original spelling
@@ -84,10 +81,11 @@ type
 
 proc readJson(dst: var Event; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
-  var wireType, id, reason: string
+  var kind: EventKind
+  var id, reason: string
   for field in p.jsonFields:
     if field == "type":
-      readJson(wireType, p, unknownFields)
+      readJson(kind, p, unknownFields)
     elif field == "id":
       readJson(id, p, unknownFields)
     elif field == "reason":
@@ -97,10 +95,9 @@ proc readJson(dst: var Event; p: var JsonParser;
     else:
       p.skipJson()
 
-  case wireType
-  of "opened": dst = Event(kind: opened, id: id)
-  of "closed": dst = Event(kind: closed, reason: reason)
-  else: p.raiseParseError("unexpected event type: " & wireType)
+  case kind
+  of opened: dst = Event(kind: opened, id: id)
+  of closed: dst = Event(kind: closed, reason: reason)
 ```
 
 This is a closed union with no raw or empty fallback. If unfamiliar branches must decode but their

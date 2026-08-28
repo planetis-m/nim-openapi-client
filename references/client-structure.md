@@ -1,7 +1,7 @@
 # Client Structure and Ergonomics
 
-Keep the client thin: public wire objects, focused constructors and accessors, and the project's
-existing transport.
+Keep the client thin: public typed protocol objects, focused constructors and accessors, and the
+project's existing transport.
 
 ## Modules
 
@@ -13,8 +13,9 @@ Use capability modules plus only shared modules that are actually needed:
 - `<capability>.nim`: schema types, constructors, request builders, parsers, and accessors.
 - `schema/`: optional; split it out only when schema size or reuse warrants it.
 
-Public request and result objects are the wire types directly. Do not introduce private `Wire`
-objects, aliases, converters, or a second representation.
+Public request and result objects directly represent the used protocol data. Do not introduce
+parallel `Wire` objects, aliases, converters, or a second representation: they duplicate fields,
+drift from public data, and require a copy after parsing.
 
 ## Constructors
 
