@@ -11,11 +11,9 @@ fields without custom code, even when the full OpenAPI schema describes a union:
 ```nim
 type
   OutputPart = object
-    `type`: string
     text: string
 
   Output = object
-    `type`: string
     content: seq[OutputPart]
 
   Result = object
