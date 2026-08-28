@@ -43,10 +43,11 @@ For an evolving server-owned response enum, map unfamiliar strings with a focuse
 ```nim
 import brian
 
-type ResponseStatus {.pure.} = enum
-  unknown = "" ## Unrecognized server value; spelling is discarded; do not assume completion.
-  completed
-  failed
+type
+  ResponseStatus {.pure.} = enum
+    unknown = "" ## Unrecognized server value; spelling is discarded; do not assume completion.
+    completed
+    failed
 
 proc readJson(dst: var ResponseStatus; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
@@ -84,12 +85,17 @@ type
 proc readJson(dst: var Event; p: var JsonParser;
     unknownFields: UnknownFieldPolicy) =
   var wireType, id, reason: string
-  for field in p.jsonFields(["type", "id", "reason"], unknownFields):
-    case field
-    of 0: readJson(wireType, p, unknownFields)
-    of 1: readJson(id, p, unknownFields)
-    of 2: readJson(reason, p, unknownFields)
-    else: discard
+  for field in p.jsonFields:
+    if field == "type":
+      readJson(wireType, p, unknownFields)
+    elif field == "id":
+      readJson(id, p, unknownFields)
+    elif field == "reason":
+      readJson(reason, p, unknownFields)
+    elif unknownFields == ufReject:
+      p.raiseParseError("expected known field, got \"" & $field & "\"")
+    else:
+      p.skipJson()
 
   case wireType
   of "opened": dst = Event(kind: opened, id: id)
@@ -193,8 +199,7 @@ or `$` for Brian's raw types. Convert typed data once with `RawJson(toJson(value
 ## Custom Code Checklist
 
 - Every reader accepts `UnknownFieldPolicy` and forwards it to nested reads.
-- Use `p.jsonFields(choices, policy)` for objects; it skips or rejects unknown fields itself.
-  Use `p.kind` for token shape and `p.skipJson()` only for a selected value a reader ignores.
+- Use `p.kind` for token shape and `p.skipJson()` only for a selected value a reader ignores.
 - Use `w.write` for fixed syntax, `w.escapeJson` for dynamic strings or keys, and `writeJson` for
   values.
 - A request union writer emits only the active arm.
